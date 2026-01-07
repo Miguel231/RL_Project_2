@@ -26,18 +26,11 @@ CONFIG = {
 }
 
 
-def iql_eval(env, config, q_tables, eval_episodes=500, output=True, model='IQL'):
+def eval_policy(env, config, q_data, eval_episodes=500, output=True, model="IQL"):
     """
-    Evaluate configuration of independent Q-learning on given environment when initialised with given Q-table
-
-    :param env (gym.Env): environment to execute evaluation on
-    :param config (Dict[str, float]): configuration dictionary containing hyperparameters
-    :param q_tables (List[Dict[Act, float]]): Q-tables mapping actions to Q-values for each agent
-    :param eval_episodes (int): number of evaluation episodes
-    :param output (bool): flag whether mean evaluation performance should be printed
-    :return (float, float): mean and standard deviation of returns received over episodes
+    Evaluate IQL or CQL policy
     """
-    if model == 'IQL':
+    if model == "IQL":
         eval_agents = IQL(
             num_agents=env.n_agents,
             action_spaces=env.action_space,
@@ -45,7 +38,9 @@ def iql_eval(env, config, q_tables, eval_episodes=500, output=True, model='IQL')
             learning_rate=config["lr"],
             epsilon=config["eval_epsilon"],
         )
-    elif model == 'CQL':
+        eval_agents.q_tables = q_data
+
+    elif model == "CQL":
         eval_agents = CQL(
             num_agents=env.n_agents,
             action_spaces=env.action_space,
@@ -53,10 +48,10 @@ def iql_eval(env, config, q_tables, eval_episodes=500, output=True, model='IQL')
             learning_rate=config["lr"],
             epsilon=config["eval_epsilon"],
         )
-    else:
-        raise ValueError("Model not recognized. Choose either 'IQL' or 'CQL'")
+        eval_agents.q_table = q_data
 
-    eval_agents.q_tables = q_tables
+    else:
+        raise ValueError("Model must be 'IQL' or 'CQL'")
 
     episodic_returns = []
     for _ in range(eval_episodes):
@@ -78,19 +73,15 @@ def iql_eval(env, config, q_tables, eval_episodes=500, output=True, model='IQL')
         print("EVALUATION RETURNS:")
         print(f"\tAgent 1: {mean_return[0]:.2f} ± {std_return[0]:.2f}")
         print(f"\tAgent 2: {mean_return[1]:.2f} ± {std_return[1]:.2f}")
+
     return mean_return, std_return
 
 
-def train(env, config, output=True, model='IQL'):
+def train(env, config, output=True, model="IQL"):
     """
-    Train and evaluate independent Q-learning in env with provided hyperparameters
-
-    :param env (gym.Env): environment to execute evaluation on
-    :param config (Dict[str, float]): configuration dictionary containing hyperparameters
-    :param output (bool): flag if mean evaluation results should be printed
-    :return (List[List[float]], List[List[float]], List[Dict[Act, float]]):
+    Train IQL or CQL
     """
-    if model == 'IQL':
+    if model == "IQL":
         agents = IQL(
             num_agents=env.n_agents,
             action_spaces=env.action_space,
@@ -98,7 +89,7 @@ def train(env, config, output=True, model='IQL'):
             learning_rate=config["lr"],
             epsilon=config["init_epsilon"],
         )
-    elif model == 'CQL':
+    elif model == "CQL":
         agents = CQL(
             num_agents=env.n_agents,
             action_spaces=env.action_space,
@@ -107,8 +98,8 @@ def train(env, config, output=True, model='IQL'):
             epsilon=config["init_epsilon"],
         )
     else:
-        raise ValueError("Model not recognized. Choose either 'IQL' or 'CQL'")
-    
+        raise ValueError("Model must be 'IQL' or 'CQL'")
+
     step_counter = 0
     max_steps = config["total_eps"] * config["ep_length"]
 
@@ -118,49 +109,60 @@ def train(env, config, output=True, model='IQL'):
 
     for eps_num in range(config["total_eps"]):
         obss, _ = env.reset()
-        episodic_return = np.zeros(env.n_agents)
         done = False
 
         while not done:
             agents.schedule_hyperparameters(step_counter, max_steps)
-            acts = agents.act(obss)
-            n_obss, rewards, done, _, _ = env.step(acts)
-            agents.learn(obss, acts, rewards, n_obss, done)
+            actions = agents.act(obss)
+            n_obss, rewards, done, _, _ = env.step(actions)
+            agents.learn(obss, actions, rewards, n_obss, done)
 
             step_counter += 1
-            episodic_return += rewards
             obss = n_obss
 
         if eps_num > 0 and eps_num % config["eval_freq"] == 0:
-            mean_return, std_return = iql_eval(
-                env, config, agents.q_tables, output=output
+            q_data = agents.q_tables if model == "IQL" else agents.q_table
+
+            mean_return, std_return = eval_policy(
+                env,
+                config,
+                q_data,
+                output=output,
+                model=model,
             )
+
             evaluation_return_means.append(mean_return)
             evaluation_return_stds.append(std_return)
-            evaluation_q_tables.append(copy.deepcopy(agents.q_tables))
+            evaluation_q_tables.append(copy.deepcopy(q_data))
+
+    final_q = agents.q_tables if model == "IQL" else agents.q_table
 
     return (
         evaluation_return_means,
         evaluation_return_stds,
         evaluation_q_tables,
-        agents.q_tables,
+        final_q,
     )
 
 
 if __name__ == "__main__":
     random.seed(CONFIG["seed"])
     np.random.seed(CONFIG["seed"])
-    
-    # Create the Prisoner's Dilemma environment
-    env = create_pd_game()
-    
-    # Train and evaluate IQL on the environment
-    evaluation_return_means, evaluation_return_stds, eval_q_tables, q_tables = train(env, CONFIG, model='IQL')
 
-    #train and evaluate CQL on the environment
-    evaluation_return_means_cql, evaluation_return_stds_cql, eval_q_tables_cql, q_tables_cql = train(env, CONFIG, model='CQL')
-    
-    # Visualise results
-    visualise_q_tables(q_tables)
-    visualise_evaluation_returns(evaluation_return_means, evaluation_return_stds)
-    visualise_q_convergence(eval_q_tables, env)
+    env = create_pd_game()
+
+    # ---------------- IQL ----------------
+    eval_means_iql, eval_stds_iql, eval_q_iql, q_iql = train(
+        env, CONFIG, model="IQL"
+    )
+
+    visualise_q_tables(q_iql)
+    visualise_evaluation_returns(eval_means_iql, eval_stds_iql)
+    visualise_q_convergence(eval_q_iql, env)
+
+    # ---------------- CQL ----------------
+    eval_means_cql, eval_stds_cql, eval_q_cql, q_cql = train(
+        env, CONFIG, model="CQL"
+    )
+
+    visualise_evaluation_returns(eval_means_cql, eval_stds_cql)

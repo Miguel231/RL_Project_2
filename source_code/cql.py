@@ -1,16 +1,18 @@
 from collections import defaultdict
 import random
-from typing import List, DefaultDict, Tuple
+from typing import List, Tuple
 
 import numpy as np
 from gymnasium.spaces import Space
 from gymnasium.spaces.utils import flatdim
-import itertools
+
 
 class CQL:
     """
-    Agent using the Central Q-Learning algorithm
+    Centralized Q-Learning agent
+    Learns a single Q-function over joint observations and joint actions
     """
+
     def __init__(
         self,
         num_agents: int,
@@ -18,93 +20,88 @@ class CQL:
         gamma: float,
         learning_rate: float = 0.5,
         epsilon: float = 1.0,
-        alpha: float = 0.1,
         **kwargs,
     ):
-        """
-        :param num_agents (int): number of agents
-        :param action_spaces (List[Space]): action spaces of the environment for each agent
-        :param gamma (float): discount factor (gamma)
-        :param learning_rate (float): learning rate for Q-learning updates
-        :param epsilon (float): epsilon value for all agents
-
-        :attr n_acts (List[int]): number of actions for each agent
-        :attr q_tables (List[DefaultDict]): tables for Q-values mapping actions ACTs
-            to respective Q-values for all agents
-        """
         self.num_agents = num_agents
         self.action_spaces = action_spaces
-        self.n_acts = [flatdim(action_space) for action_space in action_spaces]
+        self.n_acts = [flatdim(a) for a in action_spaces]
 
-        self.gamma: float = gamma
+        self.gamma = gamma
         self.learning_rate = learning_rate
         self.epsilon = epsilon
-        self.alpha = alpha
 
-        self.q_table = defaultdict(lambda:0.0)
-        self.joint_actions = list(itertools.product(*[range(n) for n in self.n_acts]))
+        # Joint Q-table
+        # Access: Q[(obs_tuple, action_tuple)]
+        self.q_table = defaultdict(lambda: 0)
 
+        # Precompute all joint actions
+        self.joint_actions = self._compute_joint_actions()
 
+    def _compute_joint_actions(self) -> List[Tuple[int, ...]]:
+        """
+        Returns all possible joint actions
+        """
+        if self.num_agents == 2:
+            return [(a1, a2)
+                    for a1 in range(self.n_acts[0])
+                    for a2 in range(self.n_acts[1])]
+        else:
+            raise NotImplementedError("CQL implemented only for 2 agents")
 
     def act(self, obss) -> List[int]:
         """
-        Implement the epsilon-greedy action
+        Epsilon-greedy selection over joint actions
         """
-        ### PUT YOUR CODE HERE ###
+        obs_tuple = tuple(obss)
 
-        joint_state = tuple(obss)
         if random.random() < self.epsilon:
-            action = random.choice(self.joint_actions)
+            joint_action = random.choice(self.joint_actions)
         else:
-            q_values = [float(self.q_table[str((joint_state, tuple(a)))]) for a in self.joint_actions]
-            idx = int(np.argmax(q_values))
-            action = self.joint_actions[idx]
+            q_values = [
+                self.q_table[str((obs_tuple, ja))]
+                for ja in self.joint_actions
+            ]
+            joint_action = self.joint_actions[int(np.argmax(q_values))]
 
-        return list(action)
+        return list(joint_action)
 
     def learn(
         self,
         obss: List[np.ndarray],
         actions: List[int],
-        reward: float,
+        rewards: List[float],
         n_obss: List[np.ndarray],
         done: bool,
     ):
         """
-        Updates the Q-tables based on experience
-
-        **IMPLEMENT THIS FUNCTION**
-
+        Centralized Q-learning update
         """
-        ### PUT YOUR CODE HERE ###
-        joint_state = tuple(float(x) for obs in obss for x in np.ravel(obs))
-        joint_action = tuple(actions)
-        next_joint_state = tuple(float(x) for obs in n_obss for x in np.ravel(obs))
-        current_q = float(self.q_table[str((joint_state, joint_action))])
+        obs_tuple = tuple(obss)
+        next_obs_tuple = tuple(n_obss)
+        action_tuple = tuple(actions)
 
-        #penalty
-        q_values = [float(self.q_table[str((joint_state, a))]) for a in self.joint_actions]
-        penalty = np.log(np.sum(np.exp(q_values))) - current_q
+        current_q = self.q_table[str((obs_tuple, action_tuple))]
+
+        # Centralized reward: sum of individual rewards
+        reward = sum(rewards)
 
         if done:
             target = reward
         else:
-            q_values_next = [float(self.q_table[str((next_joint_state, tuple(a)))]) for a in self.joint_actions]
-            target = reward + self.gamma * max(q_values_next)
+            next_qs = [
+                self.q_table[str((next_obs_tuple, ja))]
+                for ja in self.joint_actions
+            ]
+            target = reward + self.gamma * max(next_qs)
 
-        target = target - self.alpha * penalty
-        self.q_table[str((joint_state, joint_action))] = current_q + self.learning_rate * (target - current_q)
+        self.q_table[str((obs_tuple, action_tuple))] = (
+            current_q + self.learning_rate * (target - current_q)
+        )
 
-        return self.q_table[str((joint_state, joint_action))]
+        return self.q_table[str((obs_tuple, action_tuple))]
 
     def schedule_hyperparameters(self, timestep: int, max_timestep: int):
         """
-        Updates the hyperparameters
-
-        This function is called before every episode and allows you to schedule your
-        hyperparameters.
-
-        :param timestep (int): current timestep at the beginning of the episode
-        :param max_timestep (int): maximum timesteps that the training loop will run for
+        Linear epsilon decay (same as IQL)
         """
         self.epsilon = 1.0 - (min(1.0, timestep / (0.8 * max_timestep))) * 0.99
